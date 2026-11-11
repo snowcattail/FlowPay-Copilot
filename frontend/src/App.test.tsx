@@ -171,6 +171,39 @@ describe('chat workspace interactions', () => {
     )
   })
 
+  it('opens and focuses only the cited message evidence, preserving evidence inspection', async () => {
+    recorded.push(
+      trace(2, 'message.assistant', {
+        content: '第一轮 [shared]',
+        evidence: [{ id: 'shared', title: '旧资料' }],
+      }),
+      trace(3, 'message.assistant', {
+        content: '第二轮 [1]',
+        evidence: [{ id: 'shared', title: '新资料' }],
+      }),
+    )
+    await mounted()
+    const animate = vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation)
+    const original = HTMLElement.prototype.animate
+    HTMLElement.prototype.animate = animate
+    try {
+      const user = userEvent.setup()
+      await user.click(screen.getAllByRole('button', { name: '查看引用 shared' })[1])
+      const panels = [...document.querySelectorAll('details')].filter((panel) =>
+        panel.textContent?.includes('本轮资料'),
+      )
+      expect(panels.map((panel) => panel.open)).toEqual([false, true])
+      const card = screen.getByRole('button', { name: '新资料' })
+      expect(document.activeElement).toBe(card)
+      expect(card.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'smooth' })
+      expect(animate).toHaveBeenCalledOnce()
+      await user.click(card)
+      expect(screen.getByRole('dialog', { name: '新资料' })).toBeTruthy()
+    } finally {
+      HTMLElement.prototype.animate = original
+    }
+  })
+
   it('stops a running session and explicitly continues an interrupted turn', async () => {
     recorded.push(trace(2, 'run.started', { input: 'question' }))
     await mounted()

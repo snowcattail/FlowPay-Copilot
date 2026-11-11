@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 
 from flowpay.core.json import (
@@ -15,8 +16,11 @@ from flowpay.core.json import (
 from flowpay.dataset import snapshot_ready
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / "backend/.venv/bin/python"
-BIN = PYTHON.parent
+VENV = ROOT / "backend/.venv"
+BIN = VENV / ("Scripts" if sys.platform == "win32" else "bin")
+EXECUTABLE_SUFFIX = ".exe" if sys.platform == "win32" else ""
+PYTHON = BIN / f"python{EXECUTABLE_SUFFIX}"
+NPM = "npm.cmd" if sys.platform == "win32" else "npm"
 SCOPES = ["backend/src", "backend/tests", "backend/migrations", "scripts"]
 SKIPPED_WITHOUT_DATASET = (
     "WARNING: 未配置数据集，s3/s4 与 benchmark 相关用例已跳过；"
@@ -33,11 +37,12 @@ def run(*command: str, cwd: Path = ROOT) -> None:
 def check_types() -> None:
     # 保留完整报告；错误和警告均阻止验收，避免编辑器问题被门禁忽略。
     result = subprocess.run(
-        [str(BIN / "basedpyright"), "--outputjson", *SCOPES],
+        [str(BIN / f"basedpyright{EXECUTABLE_SUFFIX}"), "--outputjson", *SCOPES],
         cwd=ROOT,
         capture_output=True,
         check=False,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode not in (0, 1):
         raise RuntimeError(result.stderr or result.stdout)
@@ -45,13 +50,19 @@ def check_types() -> None:
     summary = require_object(report["summary"])
     output = ROOT / "var/quality/basedpyright.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(result.stdout)
+    output.write_text(result.stdout, encoding="utf-8")
     for item in require_list(report["generalDiagnostics"]):
         diagnostic = require_object(item)
         if diagnostic["severity"] in {"error", "warning"}:
             position = require_object(require_object(diagnostic["range"])["start"])
             line = require_int(position["line"]) + 1
-            print(f"{diagnostic['file']}:{line}: {diagnostic['message']}")
+            message = f"{diagnostic['file']}:{line}: {diagnostic['message']}"
+            console_encoding = sys.stdout.encoding or "utf-8"
+            print(
+                message.encode(console_encoding, errors="backslashreplace").decode(
+                    console_encoding
+                )
+            )
     print(f"Type checks: {report['summary']}; all diagnostics: {output}", flush=True)
     if summary["errorCount"] or summary["warningCount"]:
         raise SystemExit(1)
@@ -69,8 +80,8 @@ def main() -> None:
         "--database", action="store_true", help="运行独立 PostgreSQL 库与 HTTP/SSE 验收"
     )
     args = parser.parse_args(namespace=Arguments())
-    run(str(BIN / "ruff"), "check", *SCOPES)
-    run(str(BIN / "ruff"), "format", "--check", *SCOPES)
+    run(str(BIN / f"ruff{EXECUTABLE_SUFFIX}"), "check", *SCOPES)
+    run(str(BIN / f"ruff{EXECUTABLE_SUFFIX}"), "format", "--check", *SCOPES)
     check_types()
     if args.database:
         run(str(PYTHON), "scripts/verify_database.py")
@@ -80,7 +91,7 @@ def main() -> None:
             print(SKIPPED_WITHOUT_DATASET)
         print("PostgreSQL/HTTP regression omitted; use --database for full acceptance.")
     for command in ("format:check", "test", "build"):
-        run("npm", "run", command, cwd=ROOT / "frontend")
+        run(NPM, "run", command, cwd=ROOT / "frontend")
     print("Requested quality checks passed.")
 
 

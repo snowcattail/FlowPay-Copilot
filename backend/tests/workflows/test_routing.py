@@ -2,13 +2,23 @@
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from flowpay.bootstrap import create_workflow
 from flowpay.cli import Arguments, configured_runtime, main
 from flowpay.core.config import load_settings
-from flowpay.router import resolve_stage
+from flowpay.core.execution.runtime import AgentRuntime
+from flowpay.core.execution.stage import StageCard
+from flowpay.core.llm.chat import ChatModel
+from flowpay.router import (
+    ROUTE_STATE_KEY,
+    RoutedWorkflow,
+    TroubleshootingMode,
+    resolve_stage,
+    route_first_turn,
+)
 from flowpay.workflows.s1 import S1Workflow
 from flowpay.workflows.s2 import S2Workflow
 from flowpay.workflows.s3 import S3Workflow
@@ -42,6 +52,63 @@ def test_environment_stage_selection(monkeypatch: pytest.MonkeyPatch, selection:
     """环境变量使用当前注册阶段名。"""
     monkeypatch.setenv("FLOWPAY_WORKFLOW", selection)
     assert configured_runtime(Arguments(config=CONFIG)).workflow == selection
+
+
+def test_default_and_named_modes() -> None:
+    assert resolve_stage() == "auto"
+    assert resolve_stage(TroubleshootingMode.FAST_FAQ) == "s1"
+    assert resolve_stage("DEEP_INVESTIGATION") == "s3"
+    assert resolve_stage("INTERACTIVE_DIAGNOSIS") == "s4"
+    assert route_first_turn("Webhook 返回 410 后会怎样？") is TroubleshootingMode.FAST_FAQ
+    assert (
+        route_first_turn("生产环境 acct_bg_001 的支付失败，为什么？")
+        is TroubleshootingMode.INTERACTIVE_DIAGNOSIS
+    )
+    assert route_first_turn("支付没收到通知") is TroubleshootingMode.INTERACTIVE_DIAGNOSIS
+
+
+def test_auto_route_is_fixed_after_first_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Callable
+
+    import flowpay.router as router
+    from flowpay.core.execution.contracts import TurnInput, TurnResult, Workflow
+
+    chosen: list[str] = []
+
+    class FakeWorkflow:
+        id: str = "fake-workflow"
+        version: str = "1"
+        card: StageCard = RoutedWorkflow.card
+
+        def __init__(self, stage: str) -> None:
+            self.stage: str = stage
+
+        async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
+            del runtime
+            chosen.append(self.stage)
+            return TurnResult("ok", dict(turn.saved_state))
+
+    def fake_stage(stage: str) -> router.StageFactory:
+        def create(_model: ChatModel, _prepare: Callable[[str], str]) -> Workflow:
+            return FakeWorkflow(stage)
+
+        return create
+
+    monkeypatch.setitem(router.STAGES, "s1", fake_stage("s1"))
+    monkeypatch.setitem(router.STAGES, "s4", fake_stage("s4"))
+    workflow = RoutedWorkflow(cast(ChatModel, cast(object, None)), lambda query: query)
+    runtime = cast(AgentRuntime, cast(object, None))
+    with pytest.raises(StopIteration) as first_return:
+        workflow.run(TurnInput("什么是幂等键？", [], {}), runtime).send(None)
+    first = cast(TurnResult, cast(object, first_return.value.value))
+    assert first.saved_state[ROUTE_STATE_KEY] == "FAST_FAQ"
+    with pytest.raises(StopIteration) as second_return:
+        workflow.run(
+            TurnInput("acct_bg_001 生产环境支付失败", [], first.saved_state), runtime
+        ).send(None)
+    second = cast(TurnResult, cast(object, second_return.value.value))
+    assert second.saved_state[ROUTE_STATE_KEY] == "FAST_FAQ"
+    assert chosen == ["s1", "s1"]
 
 
 @pytest.mark.parametrize("stage", ["s3", "s4"])

@@ -144,7 +144,12 @@ def test_zip_rejects_existing_symlink_escape(tmp_path: Path) -> None:
     target.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (target / "data").symlink_to(outside, target_is_directory=True)
+    try:
+        (target / "data").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     bundle = write_bundle(tmp_path / "dataset.zip")
     with pytest.raises(SystemExit, match="不安全的路径"):
         start.resolve_dataset(str(bundle))
@@ -164,8 +169,8 @@ def prepare_start(
     env_file = tmp_path / ".env"
     env_file.write_text(
         "FLOWPAY_DATASET_ROOT='dataset.zip'\n"
-        "FLOWPAY_MODEL_API_KEY='example'\n"
-        "OLLAMA_API_KEY='ollama'\n"
+        + "FLOWPAY_MODEL_API_KEY='example'\n"
+        + "OLLAMA_API_KEY='ollama'\n"
     )
     calls: list[tuple[str, ...]] = []
     dataset_paths: list[str] = []
@@ -180,6 +185,7 @@ def prepare_start(
         dataset_paths.append(env[start.DATASET_KEY])
 
     def capture(*args: str, env: dict[str, str] | None = None) -> str:
+        _ = env
         return MODEL_LIST if args[-1] == "list" else ""
 
     monkeypatch.setattr(start, "knowledge_ready", ready)

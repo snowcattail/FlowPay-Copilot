@@ -19,6 +19,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import tomllib
 
@@ -70,7 +71,7 @@ def capture(*args: str, env: dict[str, str] | None = None) -> str:
 def embedding_model() -> tuple[str, str]:
     """从 local.toml 读出嵌入模型标签和钉死的 digest；配置只维护在那一处。"""
     with (ROOT / CONFIG).open("rb") as handle:
-        embedding = tomllib.load(handle)["embedding"]
+        embedding = cast(dict[str, str], tomllib.load(handle)["embedding"])
     return str(embedding["name"]), str(embedding["revision"])
 
 

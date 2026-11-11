@@ -5,6 +5,7 @@ import {
   useDeferredValue,
   useEffect,
   useRef,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -13,6 +14,8 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import type { Root, Element, RootContent } from 'hast'
 
 function textContent(children: ReactNode): string {
   return Children.toArray(children)
@@ -82,10 +85,82 @@ const components: Components = {
   ),
 }
 const plugins = [remarkGfm]
-const highlights = [rehypeHighlight]
-const RenderedMarkdown = memo(function RenderedMarkdown({ text }: { text: string }) {
+type CitationProps = {
+  citationIds?: readonly string[]
+  onCitationClick?: (id: string) => void
+}
+
+// 只改写文本叶子；代码和链接里的方括号保留原义。
+function citationPlugin(ids: readonly string[]) {
+  const known = new Set(ids)
+  return () => (tree: Root) => {
+    function walk(parent: Root | Element) {
+      parent.children = parent.children.flatMap((node): RootContent[] => {
+        if (node.type === 'element') {
+          if (!['a', 'code', 'pre'].includes(node.tagName)) walk(node)
+          return [node]
+        }
+        if (node.type !== 'text') return [node]
+        const result: RootContent[] = []
+        let offset = 0
+        for (const match of node.value.matchAll(/\[([^\[\]\n]+)\]/g)) {
+          const label = match[1]
+          const id = known.has(label)
+            ? label
+            : /^[1-9]\d*$/.test(label)
+              ? ids[Number(label) - 1]
+              : undefined
+          if (!id) continue
+          if (match.index > offset)
+            result.push({ type: 'text', value: node.value.slice(offset, match.index) })
+          result.push({
+            type: 'element',
+            tagName: 'span',
+            properties: { 'data-citation-id': id },
+            children: [{ type: 'text', value: match[0] }],
+          })
+          offset = match.index + match[0].length
+        }
+        if (!offset) return [node]
+        if (offset < node.value.length)
+          result.push({ type: 'text', value: node.value.slice(offset) })
+        return result
+      }) as typeof parent.children
+    }
+    walk(tree)
+  }
+}
+const emptyCitationIds: readonly string[] = []
+const RenderedMarkdown = memo(function RenderedMarkdown({
+  text,
+  citationIds = emptyCitationIds,
+  onCitationClick,
+}: { text: string } & CitationProps) {
+  const highlights = useMemo(() => [rehypeHighlight, citationPlugin(citationIds)], [citationIds])
+  const renderers = useMemo<Components>(
+    () => ({
+      ...components,
+      span: ({ node, children, ...props }) => {
+        const id = node?.properties['data-citation-id']
+        return typeof id === 'string' && onCitationClick ? (
+          <Badge
+            asChild
+            variant="secondary"
+            className="mx-0.5 cursor-pointer px-1.5 py-0 align-super text-[10px] hover:bg-blue-100"
+          >
+            <button type="button" aria-label={`查看引用 ${id}`} onClick={() => onCitationClick(id)}>
+              {children}
+            </button>
+          </Badge>
+        ) : (
+          <span {...props}>{children}</span>
+        )
+      },
+    }),
+    [onCitationClick],
+  )
   return (
-    <Markdown remarkPlugins={plugins} rehypePlugins={highlights} components={components} skipHtml>
+    <Markdown remarkPlugins={plugins} rehypePlugins={highlights} components={renderers} skipHtml>
       {text}
     </Markdown>
   )
@@ -95,14 +170,20 @@ const RenderedMarkdown = memo(function RenderedMarkdown({ text }: { text: string
 export function MarkdownContent({
   text,
   streaming = false,
+  citationIds,
+  onCitationClick,
 }: {
   text: string
   streaming?: boolean
-}) {
+} & CitationProps) {
   const deferred = useDeferredValue(text)
   return (
     <div className="markdown-content min-w-0 text-[13px] leading-7" aria-busy={streaming}>
-      <RenderedMarkdown text={streaming ? deferred : text} />
+      <RenderedMarkdown
+        text={streaming ? deferred : text}
+        citationIds={citationIds}
+        onCitationClick={onCitationClick}
+      />
       {streaming && (
         <span
           aria-label="正在生成"

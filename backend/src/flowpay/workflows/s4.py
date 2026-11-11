@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -378,17 +379,29 @@ class S4Workflow:
         )
         while agent.may_think():
             reply = await agent.think()
-            state: dict[str, object] = {"case": case, "queried": sorted(done), "actions": actions}
             if reply.is_answer:
                 if await agent.disputed(reply):
                     continue
-                return agent.accept(reply, **state)
-            for action in reply.actions:
-                agent.observe(await agent.perform(action))
+                return agent.accept(reply, case=case, queried=sorted(done), actions=actions)
+            await agent.start_actions(reply.actions)
+            outcomes = await asyncio.gather(
+                *(agent.perform(action, started=True) for action in reply.actions),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                agent.observe(outcome)
             # 追问要等本轮其余工具结果全部回填之后才结束，否则检查点里会留下
             # 没有配对的 tool_calls，下一轮请求会被供应商拒绝。
             if pending:
-                return agent.pause(pending[0].question, **state, waiting_for=pending[0].missing)
+                return agent.pause(
+                    pending[0].question,
+                    case=case,
+                    queried=sorted(done),
+                    actions=actions,
+                    waiting_for=pending[0].missing,
+                )
         raise ModelOutputError("s4 在模型调用预算内未生成有效回答")
 
     @staticmethod

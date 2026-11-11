@@ -13,7 +13,7 @@ def test_core_does_not_import_workflow_or_adapter() -> None:
         forbidden = ("flowpay.workflows", "flowpay.adapters", "flowpay.router", "flowpay.bootstrap")
         if "src" in path.parts:
             forbidden += ("scripts",)
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 assert not (node.module or "").startswith(forbidden), path
@@ -42,7 +42,7 @@ def test_workflows_use_capability_interfaces_without_infrastructure() -> None:
         "flowpay.core.event_log.store",
     )
     for path in root.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ImportFrom):
                 # SDK 的协议类型允许用于注解；客户端和执行实现仍禁止进入 workflows。
                 if (node.module or "").startswith("openai.types."):

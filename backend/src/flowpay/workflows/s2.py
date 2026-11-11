@@ -1,5 +1,6 @@
 """s2 单智能体检索：模型自己选工具、决定查什么、什么时候回答。"""
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -98,8 +99,16 @@ class S2Workflow:
                 if await agent.disputed(reply):
                     continue
                 return agent.accept(reply, actions=actions)
-            for action in reply.actions:
-                agent.observe(await agent.perform(action))
+            # 一次模型回复中的调用没有相互依赖；gather 保留输入顺序，观察按原 ID 回填。
+            await agent.start_actions(reply.actions)
+            outcomes = await asyncio.gather(
+                *(agent.perform(action, started=True) for action in reply.actions),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                agent.observe(outcome)
         raise ModelOutputError("s2 在模型调用预算内未生成有效回答")
 
     @staticmethod
