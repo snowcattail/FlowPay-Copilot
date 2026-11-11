@@ -22,6 +22,28 @@ export function useSessionEvents(
     if (!sessionId) return
     let disposed = false
     let stream: EventSource | undefined
+    let pending: TraceEvent[] = []
+    let frame: number | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cancelFlush = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      if (timer !== undefined) clearTimeout(timer)
+      frame = undefined
+      timer = undefined
+    }
+    const flush = () => {
+      cancelFlush()
+      if (disposed || !pending.length) return
+      const batch = pending
+      pending = []
+      setSnapshot((previous) => ({ sessionId, events: mergeEvents(previous.events, batch) }))
+    }
+    const scheduleFlush = () => {
+      if (timer !== undefined) return
+      // 后台标签页可能暂停 RAF，定时器保证缓冲仍能提交。
+      if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(flush)
+      timer = setTimeout(flush, 32)
+    }
     sessionApi
       .getEvents(sessionId)
       .then((history) => {
@@ -44,6 +66,9 @@ export function useSessionEvents(
         }
         stream.addEventListener('session-deleted', () => {
           if (disposed) return
+          disposed = true
+          cancelFlush()
+          pending = []
           stream?.close()
           setSnapshot({ sessionId, events: [] })
           refreshSessions().catch((error) => reportError(errorMessage(error)))
@@ -51,7 +76,9 @@ export function useSessionEvents(
         stream.addEventListener('trace', (event) => {
           if (disposed) return
           const next = JSON.parse((event as MessageEvent).data) as TraceEvent
-          setSnapshot((previous) => ({ sessionId, events: mergeEvents(previous.events, [next]) }))
+          pending.push(next)
+          if (['model.delta', 'message.delta', 'model.chunk'].includes(next.type)) scheduleFlush()
+          else flush() // 控制事件和最终回答先提交排在它之前的正文。
           if (next.type.startsWith('run.') || next.type === 'message.user')
             refreshSessions().catch((error) => {
               if (!disposed) reportError(errorMessage(error))
@@ -66,6 +93,8 @@ export function useSessionEvents(
       })
     return () => {
       disposed = true
+      cancelFlush()
+      pending = []
       stream?.close()
     }
   }, [sessionId, retry, refreshSessions, reportError])

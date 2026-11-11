@@ -33,20 +33,24 @@ export type Meta = {
 
 // SSE 重连会重放事件；以 seq 合并后排序，防止重复消息和乱序状态。
 export function mergeEvents(existing: TraceEvent[], incoming: TraceEvent[]) {
+  if (!incoming.length) return existing
   // 正常流式追加已按序到达，避免每个 token 都重新排序全部历史。
   if (
     incoming.length &&
     incoming[0].seq > (existing.at(-1)?.seq ?? 0) &&
     incoming.every((event, index) => index === 0 || event.seq > incoming[index - 1].seq)
-  )
-    return [...existing, ...incoming]
+  ) {
+    const merged = [...existing, ...incoming]
+    appendProjection(existing, incoming, merged)
+    return merged
+  }
   const bySeq = new Map(existing.map((event) => [event.seq, event]))
   incoming.forEach((event) => bySeq.set(event.seq, event))
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq)
 }
 
 /** 顺序折叠事件得到当前状态；SSE 是否连接不代表 Run 是否仍在后台运行。 */
-export function statusOf(events: TraceEvent[]) {
+function foldStatusOf(events: TraceEvent[]) {
   let status = 'idle'
   for (const event of events) {
     if (event.type === 'run.started') status = 'running'
@@ -65,7 +69,7 @@ export function statusOf(events: TraceEvent[]) {
  *
  * 落库的回答、内部反馈和被拒草稿都不在这里：它们各有归属，只留在轨迹中。
  */
-export function liveSegments(events: TraceEvent[]): { steps: string[]; current: string } {
+function foldLiveSegments(events: TraceEvent[]): { steps: string[]; current: string } {
   const empty = { steps: [], current: '' }
   const lastRun = events.findLast((event) => event.type === 'run.started')?.run_id
   if (
@@ -114,7 +118,7 @@ export function liveText(events: TraceEvent[]) {
  * liveText 只认最近一次模型调用，模型每调一次工具正文就清空一次。空窗期用这些工具名
  * 说明进度，读者才知道刚才那段字去哪了——它们留在右侧轨迹里，没有丢。
  */
-export function liveTools(events: TraceEvent[]): { active: string[]; finished: string[] } {
+function foldLiveTools(events: TraceEvent[]): { active: string[]; finished: string[] } {
   const lastRun = events.findLast((event) => event.type === 'run.started')?.run_id
   if (!lastRun) return { active: [], finished: [] }
   const run = events.filter((event) => event.run_id === lastRun)
@@ -171,7 +175,7 @@ export const eventLabels: Record<string, string> = {
 }
 
 /** 聊天组件只接收已经解释的正文与证据，不自行读取动态载荷。 */
-export function chatMessages(events: TraceEvent[]): ChatMessageView[] {
+function foldChatMessages(events: TraceEvent[]): ChatMessageView[] {
   const retrievedByRun = new Map<string | null, Map<string, EvidenceView>>()
   const usageByRun = new Map<string | null, UsageView>()
   // 路由与缺口反馈用 output:"internal" 标记；这些调用同样花 token，单独计数便于对照。
@@ -224,4 +228,98 @@ export function chatMessages(events: TraceEvent[]): ChatMessageView[] {
     })
   }
   return messages
+}
+
+type ChatProjection = {
+  status: string
+  segments: { steps: string[]; current: string }
+  tools: { active: string[]; finished: string[] }
+  messages: ChatMessageView[]
+  runId: string | null | undefined
+  callId: string | null | undefined
+  acceptsText: boolean
+}
+
+// 不可变快照作为缓存键；React 重试渲染不会污染旧快照，废弃历史可自动回收。
+const projections = new WeakMap<TraceEvent[], ChatProjection>()
+
+function projectionOf(events: TraceEvent[]): ChatProjection {
+  const cached = projections.get(events)
+  if (cached) return cached
+  const runId = events.findLast((event) => event.type === 'run.started')?.run_id
+  const request = events.findLast(
+    (event) => event.run_id === runId && event.type === 'model.request',
+  )
+  const callId = request?.call_id
+  const projection: ChatProjection = {
+    status: foldStatusOf(events),
+    segments: foldLiveSegments(events),
+    tools: foldLiveTools(events),
+    messages: foldChatMessages(events),
+    runId,
+    callId,
+    acceptsText:
+      Boolean(runId && callId && request?.payload.output !== 'internal') &&
+      !events.some(
+        (event) =>
+          event.run_id === runId &&
+          (event.type === 'message.assistant' ||
+            (event.type === 'answer.rejected' && event.call_id === callId)),
+      ),
+  }
+  projections.set(events, projection)
+  return projection
+}
+
+function appendProjection(
+  previous: TraceEvent[],
+  incoming: TraceEvent[],
+  merged: TraceEvent[],
+): void {
+  // 控制事件改变调用、证据和用量边界，交由完整投影处理；高频正文与原始帧仅处理增量。
+  if (
+    !incoming.every((event) => ['model.delta', 'message.delta', 'model.chunk'].includes(event.type))
+  )
+    return
+  const before = projectionOf(previous)
+  // 较早调用的迟到正文会影响 steps，使用完整投影保证历史兼容性。
+  if (
+    incoming.some(
+      (event) =>
+        event.type === 'model.delta' &&
+        event.run_id === before.runId &&
+        event.call_id !== before.callId,
+    )
+  )
+    return
+  const text = before.acceptsText
+    ? incoming
+        .filter((event) => event.run_id === before.runId)
+        .map((event) =>
+          event.type === 'message.delta' ? textValue(event.payload.content) : modelTextDelta(event),
+        )
+        .join('')
+    : ''
+  projections.set(merged, {
+    ...before,
+    segments: text
+      ? { ...before.segments, current: before.segments.current + text }
+      : before.segments,
+  })
+}
+
+export function statusOf(events: TraceEvent[]): string {
+  return projectionOf(events).status
+}
+
+export function liveSegments(events: TraceEvent[]): { steps: string[]; current: string } {
+  return projectionOf(events).segments
+}
+
+export function liveTools(events: TraceEvent[]): { active: string[]; finished: string[] } {
+  return projectionOf(events).tools
+}
+
+export function chatMessages(events: TraceEvent[]): ChatMessageView[] {
+  return projectionOf(events).messages
 }
