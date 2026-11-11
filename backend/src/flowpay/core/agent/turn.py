@@ -135,10 +135,13 @@ class AgentTurn:
             closing: list[ChatCompletionMessageParam] = (
                 [{"role": "system", "content": CLOSING}] if forced else []
             )
+            offered = [] if forced else self.toolbox.definitions()
+            # 只压缩已完成调用的历史观察，检查点随消息一起更新；Case 由阶段单独保存。
+            self.budget.prepare_context(self.messages.messages, [*correction, *closing], offered)
             self.budget.spend_model_call()
             completion, call_id = await self.chat.call(
                 [*self.messages.messages, *correction, *closing],
-                [] if forced else self.toolbox.definitions(),
+                offered,
             )
             try:
                 reply = read_reply(completion, call_id, forced)

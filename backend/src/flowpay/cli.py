@@ -39,10 +39,10 @@ def app_factory() -> object:
 
 
 def main() -> None:
-    """启动单进程课程服务；默认 s1，模拟验收有独立脚本入口。"""
+    """启动单进程服务；默认根据首轮问题选择快速问答或多轮诊断。"""
     parser = argparse.ArgumentParser(description="FlowPay local teaching runtime")
     parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--stage", help="课程阶段，目前支持 s1、s2、s3")
+    parser.add_argument("--stage", help="排障模式或历史阶段名；默认 auto")
     args = parser.parse_args(namespace=Arguments())
     try:
         settings = configured_runtime(args)

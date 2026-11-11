@@ -2,8 +2,68 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
+
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionToolParam,
+)
+
+IDENTIFIER = re.compile(r"\b[a-z]{2,8}_[A-Za-z0-9_]*\d[A-Za-z0-9_]*\b")
+
+
+def estimate_tokens(value: object) -> int:
+    """保守估算请求体 token：ASCII 按四字符计，非 ASCII 按一字符计。"""
+    serialized = json.dumps(value, ensure_ascii=False, default=str)
+    ascii_count = sum(ord(char) < 128 for char in serialized)
+    return (ascii_count + 3) // 4 + len(serialized) - ascii_count
+
+
+def paired_observations(messages: Sequence[ChatCompletionMessageParam]) -> list[int]:
+    """验证每组调用都紧邻完整的同 ID 工具结果，并返回结果位置。"""
+    observations: list[int] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if message["role"] == "tool":
+            raise ValueError("Orphan tool result in context")
+        calls = message.get("tool_calls") if message["role"] == "assistant" else None
+        if not calls:
+            index += 1
+            continue
+        expected = [call["id"] for call in calls]
+        if len(expected) != len(set(expected)):
+            raise ValueError("Duplicate tool call ID in context")
+        following = messages[index + 1 : index + 1 + len(expected)]
+        if len(following) != len(expected) or any(
+            result["role"] != "tool" for result in following
+        ) or sorted(
+            cast(ChatCompletionToolMessageParam, result)["tool_call_id"] for result in following
+        ) != sorted(expected):
+            raise ValueError("Incomplete assistant/tool call pair in context")
+        observations.extend(range(index + 1, index + 1 + len(expected)))
+        index += 1 + len(expected)
+    return observations
+
+
+def observation_summary(content: str) -> str:
+    """保留有限的开头和业务编号，明确告诉模型历史观察已不完整。"""
+    identifiers = list(dict.fromkeys(IDENTIFIER.findall(content)))[:16]
+    return json.dumps(
+        {
+            "compacted": True,
+            "note": "早期工具结果已折叠，以下仅为摘要；缺失细节需要重新查询。",
+            "excerpt": content[:240],
+            "identifiers": identifiers,
+        },
+        ensure_ascii=False,
+    )
 
 
 class StopReason(StrEnum):
@@ -36,6 +96,40 @@ class Budget:
     spent_model_calls: int = 0
     spent_tool_calls: int = 0
     extendable: bool = False
+    context_token_limit: int = 32_000
+    context_trigger_ratio: float = 0.85
+    context_target_ratio: float = 0.70
+
+    def prepare_context(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        extra: Sequence[ChatCompletionMessageParam] = (),
+        tools: Sequence[ChatCompletionToolParam] = (),
+    ) -> None:
+        """逼近上限时从旧到新折叠观察；不改动调用骨架、系统消息或 Case。"""
+        if self.context_token_limit <= 0 or not (
+            0 < self.context_target_ratio < self.context_trigger_ratio <= 1
+        ):
+            raise ValueError("Invalid context token budget")
+        observations = paired_observations(messages)
+
+        def size() -> int:
+            return estimate_tokens([*messages, *extra]) + estimate_tokens(tools)
+
+        if size() >= self.context_token_limit * self.context_trigger_ratio:
+            target = int(self.context_token_limit * self.context_target_ratio)
+            for index in observations:
+                if size() <= target:
+                    break
+                message = messages[index]
+                content = message.get("content")
+                if not isinstance(content, str):
+                    continue
+                summary = observation_summary(content)
+                if estimate_tokens(summary) < estimate_tokens(content):
+                    message["content"] = summary
+        if size() > self.context_token_limit:
+            raise ValueError("Context token budget exceeded after observation compaction")
 
     def may_think(self) -> bool:
         """是否还能再请求一次模型。"""
