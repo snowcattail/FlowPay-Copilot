@@ -41,11 +41,14 @@ def paired_observations(messages: Sequence[ChatCompletionMessageParam]) -> list[
         if len(expected) != len(set(expected)):
             raise ValueError("Duplicate tool call ID in context")
         following = messages[index + 1 : index + 1 + len(expected)]
-        if len(following) != len(expected) or any(
-            result["role"] != "tool" for result in following
-        ) or sorted(
-            cast(ChatCompletionToolMessageParam, result)["tool_call_id"] for result in following
-        ) != sorted(expected):
+        if (
+            len(following) != len(expected)
+            or any(result["role"] != "tool" for result in following)
+            or sorted(
+                cast(ChatCompletionToolMessageParam, result)["tool_call_id"] for result in following
+            )
+            != sorted(expected)
+        ):
             raise ValueError("Incomplete assistant/tool call pair in context")
         observations.extend(range(index + 1, index + 1 + len(expected)))
         index += 1 + len(expected)

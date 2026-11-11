@@ -46,11 +46,7 @@ def test_long_history_compacts_old_observations_and_preserves_pairs() -> None:
     assert estimate_tokens(messages) <= budget.context_token_limit
     assert len(paired_observations(messages)) == 6
     assert messages[-1].get("content") == case
-    summaries = [
-        cast(str, message["content"])
-        for message in messages
-        if message["role"] == "tool"
-    ]
+    summaries = [cast(str, message["content"]) for message in messages if message["role"] == "tool"]
     assert any(json.loads(content)["compacted"] for content in summaries if content.startswith("{"))
 
 

@@ -6,7 +6,10 @@ from flowpay.core.knowledge.store import exact_terms, reciprocal_rank_fusion
 
 def passage(name: str) -> Passage:
     return Passage(
-        f"doc:{name}#c001", name, name, 0.5,
+        f"doc:{name}#c001",
+        name,
+        name,
+        0.5,
         PassageSource("collection", name, 1, f"{name}.md", "a" * 64, {}, {}),
     )
 
@@ -26,5 +29,7 @@ def test_rrf_prioritizes_exact_hits_and_top_k() -> None:
 
 def test_exact_terms_cover_identifiers_and_error_codes() -> None:
     assert exact_terms("customer_id FP-4021 order_123 status") == [
-        "customer_id", "FP-4021", "order_123"
+        "customer_id",
+        "FP-4021",
+        "order_123",
     ]

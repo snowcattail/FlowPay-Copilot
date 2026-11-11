@@ -11,8 +11,7 @@ depends_on = None
 def upgrade(database: str) -> None:
     _ = database
     op.execute(
-        "CREATE INDEX chunks_content_fts_idx "
-        "ON chunks USING gin (to_tsvector('simple', content))"
+        "CREATE INDEX chunks_content_fts_idx ON chunks USING gin (to_tsvector('simple', content))"
     )
 
 

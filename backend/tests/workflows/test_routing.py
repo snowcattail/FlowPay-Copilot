@@ -2,12 +2,16 @@
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from flowpay.bootstrap import create_workflow
 from flowpay.cli import Arguments, configured_runtime, main
 from flowpay.core.config import load_settings
+from flowpay.core.execution.runtime import AgentRuntime
+from flowpay.core.execution.stage import StageCard
+from flowpay.core.llm.chat import ChatModel
 from flowpay.router import (
     ROUTE_STATE_KEY,
     RoutedWorkflow,
@@ -64,31 +68,45 @@ def test_default_and_named_modes() -> None:
 
 
 def test_auto_route_is_fixed_after_first_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Callable
+
     import flowpay.router as router
-    from flowpay.core.execution.contracts import TurnInput, TurnResult
+    from flowpay.core.execution.contracts import TurnInput, TurnResult, Workflow
 
     chosen: list[str] = []
 
     class FakeWorkflow:
-        def __init__(self, stage: str) -> None:
-            self.stage = stage
+        id: str = "fake-workflow"
+        version: str = "1"
+        card: StageCard = RoutedWorkflow.card
 
-        async def run(self, turn: TurnInput, runtime: object) -> TurnResult:
+        def __init__(self, stage: str) -> None:
+            self.stage: str = stage
+
+        async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
+            del runtime
             chosen.append(self.stage)
             return TurnResult("ok", dict(turn.saved_state))
 
-    monkeypatch.setitem(router.STAGES, "s1", lambda model, prepare: FakeWorkflow("s1"))
-    monkeypatch.setitem(router.STAGES, "s4", lambda model, prepare: FakeWorkflow("s4"))
-    workflow = RoutedWorkflow(None, lambda query: query)
+    def fake_stage(stage: str) -> router.StageFactory:
+        def create(_model: ChatModel, _prepare: Callable[[str], str]) -> Workflow:
+            return FakeWorkflow(stage)
+
+        return create
+
+    monkeypatch.setitem(router.STAGES, "s1", fake_stage("s1"))
+    monkeypatch.setitem(router.STAGES, "s4", fake_stage("s4"))
+    workflow = RoutedWorkflow(cast(ChatModel, cast(object, None)), lambda query: query)
+    runtime = cast(AgentRuntime, cast(object, None))
     with pytest.raises(StopIteration) as first_return:
-        workflow.run(TurnInput("什么是幂等键？", [], {}), None).send(None)
-    first = first_return.value.value
+        workflow.run(TurnInput("什么是幂等键？", [], {}), runtime).send(None)
+    first = cast(TurnResult, cast(object, first_return.value.value))
     assert first.saved_state[ROUTE_STATE_KEY] == "FAST_FAQ"
     with pytest.raises(StopIteration) as second_return:
         workflow.run(
-            TurnInput("acct_bg_001 生产环境支付失败", [], first.saved_state), None
+            TurnInput("acct_bg_001 生产环境支付失败", [], first.saved_state), runtime
         ).send(None)
-    second = second_return.value.value
+    second = cast(TurnResult, cast(object, second_return.value.value))
     assert second.saved_state[ROUTE_STATE_KEY] == "FAST_FAQ"
     assert chosen == ["s1", "s1"]
 

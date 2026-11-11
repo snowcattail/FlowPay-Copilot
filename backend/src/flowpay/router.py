@@ -14,6 +14,7 @@ from flowpay.workflows.s4 import S4Workflow, conditions_in
 
 StageFactory = Callable[[ChatModel, Callable[[str], str]], Workflow]
 
+
 class TroubleshootingMode(StrEnum):
     FAST_FAQ = "FAST_FAQ"
     GUIDED_RETRIEVAL = "GUIDED_RETRIEVAL"

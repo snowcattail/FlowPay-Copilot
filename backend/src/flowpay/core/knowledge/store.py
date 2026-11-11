@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import PurePosixPath
+from typing import cast
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -46,17 +47,20 @@ def reciprocal_rank_fusion(
             order.setdefault(passage.id, len(order))
             scores[passage.id] = scores.get(passage.id, 0.0) + weight / (RRF_K + rank)
     return [
-        passages[key]
-        for key in sorted(scores, key=lambda key: (-scores[key], order[key]))[:limit]
+        passages[key] for key in sorted(scores, key=lambda key: (-scores[key], order[key]))[:limit]
     ]
 
 
 def exact_terms(text: str) -> list[str]:
     """提取字段名和业务编号；短普通词交给全文检索，避免模糊匹配噪声。"""
-    return list(dict.fromkeys(
-        term for term in re.findall(r"[A-Za-z][A-Za-z0-9_-]*", text)
-        if len(term) >= 3 and ("_" in term or "-" in term or any(c.isdigit() for c in term))
-    ))[:16]
+    terms = cast(list[str], re.findall(r"[A-Za-z][A-Za-z0-9_-]*", text))
+    return list(
+        dict.fromkeys(
+            term
+            for term in terms
+            if len(term) >= 3 and ("_" in term or "-" in term or any(c.isdigit() for c in term))
+        )
+    )[:16]
 
 
 class PostgresVectorStore:
@@ -329,16 +333,17 @@ class PostgresVectorStore:
                 FROM candidates ORDER BY score DESC,doc_id,chunk_no LIMIT %s
                 """,
                 (
-                    collection_id, Jsonb(filters or {}),
-                    json.dumps(query.vectors[0]), candidate_limit,
+                    collection_id,
+                    Jsonb(filters or {}),
+                    json.dumps(query.vectors[0]),
+                    candidate_limit,
                 ),
             ).fetchall()
             if not text.strip():
                 return [_passage(row) for row in vector[:limit]]
             # simple 配置保留 API 标识符；ILIKE 补足连字符错误码和订单号的精确命中。
             patterns = [
-                "%" + term.replace("\\", "\\\\").replace("%", "\\%")
-                .replace("_", "\\_") + "%"
+                "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                 for term in exact_terms(text)
             ]
             keyword = db.execute(
@@ -358,8 +363,15 @@ class PostgresVectorStore:
                 LIMIT %s
                 """,
                 (
-                    json.dumps(query.vectors[0]), collection_id, Jsonb(filters or {}),
-                    text, patterns, patterns, patterns, text, candidate_limit,
+                    json.dumps(query.vectors[0]),
+                    collection_id,
+                    Jsonb(filters or {}),
+                    text,
+                    patterns,
+                    patterns,
+                    patterns,
+                    text,
+                    candidate_limit,
                 ),
             ).fetchall()
             return reciprocal_rank_fusion(

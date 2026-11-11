@@ -1,7 +1,7 @@
 """同一模型响应中的工具可并发执行，观察仍按调用顺序回填。"""
 
 import asyncio
-from typing import cast
+from typing import cast, override
 
 import pytest
 
@@ -9,7 +9,8 @@ from flowpay.core.agent.trace import Tracer
 from flowpay.core.data_sources import SourceClient
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.runtime import AgentRuntime
-from flowpay.core.json import JsonObject, require_list, require_object
+from flowpay.core.json import JsonObject, require_int, require_list, require_object
+from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.router import create_stage
 
@@ -45,16 +46,17 @@ class ConcurrentSearch(Search):
 
     def __init__(self) -> None:
         super().__init__()
-        self.entered = 0
-        self.both_entered = asyncio.Event()
+        self.entered: int = 0
+        self.both_entered: asyncio.Event = asyncio.Event()
 
+    @override
     async def search(
         self,
         collection_id: str,
         text: str,
         limit: int = 5,
         filters: JsonObject | None = None,
-    ):
+    ) -> list[Passage]:
         self.entered += 1
         if self.entered == 2:
             self.both_entered.set()
@@ -78,10 +80,12 @@ async def test_independent_tool_calls_run_concurrently_and_observe_in_model_orde
 ) -> None:
     model, search = Model(), ConcurrentSearch()
     recorder = RecordingTracer()
-    tracer = cast(Tracer, recorder)
+    tracer = cast(Tracer, cast(object, recorder))
     runtime = AgentRuntime(
-        tracer, sources=cast(SourceClient, EmptySources()),
-        knowledge=search.for_run(tracer), collection_id="fixture",
+        tracer,
+        sources=cast(SourceClient, cast(object, EmptySources())),
+        knowledge=search.for_run(tracer),
+        collection_id="fixture",
     )
     model.responses = [
         completion(calls=[search_call("first", "first"), search_call("second", "second")]),
@@ -104,4 +108,5 @@ async def test_independent_tool_calls_run_concurrently_and_observe_in_model_orde
     events = recorder.events
     started = [event for event in events if event["type"] == "tool.started"]
     assert [event["call_id"] for event in started] == ["first", "second"]
-    assert [event["seq"] for event in started] == sorted(event["seq"] for event in started)
+    sequences: list[int] = [require_int(event["seq"]) for event in started]
+    assert sequences == sorted(sequences)
