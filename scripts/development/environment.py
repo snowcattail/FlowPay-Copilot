@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +13,11 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows does not provide fcntl.
+    fcntl = None
 
 ROOT = Path(__file__).resolve().parents[2]
 # 会话与轨迹存在本地 SQLite，只有知识库需要 PostgreSQL。它只发布在 127.0.0.1，
@@ -266,10 +270,31 @@ def setup_lock(operation: str) -> Generator[None]:
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "setup.lock").open("a") as handle:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                import msvcrt
+
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write("\0")
+                    handle.flush()
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                except PermissionError as error:
+                    raise BlockingIOError("Setup lock is already held") from error
         except BlockingIOError:
             raise PreparationError("另一个 make setup 正在执行，请等待完成。") from None
-        yield
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            else:
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def main(operation: str) -> None:

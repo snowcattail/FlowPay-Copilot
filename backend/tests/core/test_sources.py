@@ -130,7 +130,12 @@ def test_manifest_file_and_path_changes_are_rejected(source: DataSources, tmp_pa
         DataSources(source.root, policy)
     outside = tmp_path.parent / "outside-source-test"
     # A symlink to a directory outside root is refused before reading its contents.
-    (tmp_path / "escape").symlink_to(tmp_path.parent, target_is_directory=True)
+    try:
+        (tmp_path / "escape").symlink_to(tmp_path.parent, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     policy.setdefault("logs", {})["escape"] = {
         "path": "escape/" + tmp_path.name + "/requests.jsonl"
     }

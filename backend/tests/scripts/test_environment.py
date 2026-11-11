@@ -17,7 +17,8 @@ def test_first_setup_and_repeat_keep_user_values(tmp_path: Path) -> None:
     second = env.prepare_env(path, {})
     assert first == second
     assert path.read_bytes() == content
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
     assert first["FLOWPAY_MODEL_API_KEY"] == "example"
     assert first["OLLAMA_API_KEY"] == "ollama"
 
@@ -95,7 +96,8 @@ def test_environment_overrides_file_without_rewriting_it(tmp_path: Path) -> None
     assert values["FLOWPAY_MODEL_API_KEY"] == "external"
     assert path.read_bytes() == before
     assert "external" not in path.read_text()
-    assert os.stat(path).st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert os.stat(path).st_mode & 0o777 == 0o600
 
 
 def test_setup_stops_after_failed_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

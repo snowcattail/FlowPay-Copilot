@@ -137,7 +137,12 @@ def test_source_symlink_cannot_escape_dataset(tmp_path: Path) -> None:
     root.mkdir()
     external = tmp_path / "secret.md"
     external.write_text("outside")
-    (root / "link.md").symlink_to(external)
+    try:
+        (root / "link.md").symlink_to(external)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(ValueError, match="escapes dataset root"):
         checked_bytes(root, "link.md", hashlib.sha256(b"outside").hexdigest())
 
