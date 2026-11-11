@@ -150,10 +150,17 @@ class AgentTurn:
             return reply
         raise ModelOutputError("模型调用预算内没有得到可用的输出")
 
-    async def perform(self, action: Action) -> Observation:
+    async def start_actions(self, actions: list[Action]) -> None:
+        """并发前按模型顺序记录开始事件，使日志序号与动作顺序一致。"""
+        for action in actions:
+            await self.toolbox.start(action.call, parent_call_id=action.from_call)
+
+    async def perform(self, action: Action, *, started: bool = False) -> Observation:
         """执行模型选择的动作；参数错误作为可纠正的观察回传，工具内部故障继续上抛。"""
         try:
-            payload = await self.toolbox.run(action.call, parent_call_id=action.from_call)
+            payload = await self.toolbox.run(
+                action.call, parent_call_id=action.from_call, started=started
+            )
         except ToolInputError as error:
             payload = error.as_result()
         return Observation(action, payload)
