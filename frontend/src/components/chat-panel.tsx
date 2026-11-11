@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { UsageLine } from '@/components/usage-line'
 import {
   Workflow,
@@ -18,7 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { MarkdownContent } from '@/components/markdown-content'
 import { StatusBadge } from '@/components/status-badge'
-import { textValue } from '@/event-data'
+import { textValue, type ChatMessageView } from '@/event-data'
 import { cn } from '@/lib/utils'
 import { liveSegments, liveTools, statusLabels, chatMessages } from '@/state'
 import type { RunActions } from '@/hooks/use-run-actions'
@@ -32,6 +32,30 @@ function progressText({ active, finished }: { active: string[]; finished: string
   if (finished.length) return `已查询 ${finished.join('、')}，正在整理`
   return '正在查询与整理信息'
 }
+
+const AnswerContent = memo(function AnswerContent({
+  message,
+  revealCitation,
+}: {
+  message: ChatMessageView
+  revealCitation: (messageId: string, evidenceId: string) => void
+}) {
+  const citationIds = useMemo(
+    () => message.payload.available.map((item) => item.id),
+    [message.payload.available],
+  )
+  const onCitationClick = useCallback(
+    (id: string) => revealCitation(message.event_id, id),
+    [message.event_id, revealCitation],
+  )
+  return (
+    <MarkdownContent
+      text={message.payload.content}
+      citationIds={citationIds}
+      onCitationClick={onCitationClick}
+    />
+  )
+})
 
 export function ChatPanel({
   meta,
@@ -56,6 +80,30 @@ export function ChatPanel({
 }) {
   // 草稿和滚动属于聊天界面；网络重试 ID 由操作 hook 持有。
   const [draft, setDraft] = useState('')
+  const evidencePanels = useRef(new Map<string, HTMLDetailsElement>())
+  const evidenceCards = useRef(new Map<string, HTMLButtonElement>())
+  const highlightAnimation = useRef<Animation | null>(null)
+  const revealCitation = useCallback((messageId: string, evidenceId: string) => {
+    const panel = evidencePanels.current.get(messageId)
+    const card = evidenceCards.current.get(JSON.stringify([messageId, evidenceId]))
+    if (!panel || !card) return
+    pinned.current = false
+    panel.open = true
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    card.focus({ preventScroll: true })
+    highlightAnimation.current?.cancel()
+    if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+      highlightAnimation.current =
+        card.animate?.(
+          [
+            { backgroundColor: '#dbeafe', boxShadow: '0 0 0 3px #60a5fa' },
+            { backgroundColor: '#eff6ff', boxShadow: '0 0 0 1px #93c5fd' },
+            { backgroundColor: 'transparent', boxShadow: '0 0 0 0px transparent' },
+          ],
+          { duration: 1800, easing: 'ease-out' },
+        ) ?? null
+  }, [])
+  useEffect(() => () => highlightAnimation.current?.cancel(), [active])
   const draftSession = useRef(active)
   const { pending } = actions
   const running = status === 'running'
@@ -179,11 +227,17 @@ export function ChatPanel({
                     {message.payload.content}
                   </p>
                 ) : (
-                  <MarkdownContent text={message.payload.content} />
+                  <AnswerContent message={message} revealCitation={revealCitation} />
                 )}
                 {message.payload.usage && <UsageLine usage={message.payload.usage} />}
                 {!!message.payload.available.length && (
-                  <details className="mt-4 text-xs text-muted-foreground">
+                  <details
+                    className="mt-4 text-xs text-muted-foreground"
+                    ref={(node) => {
+                      if (node) evidencePanels.current.set(message.event_id, node)
+                      else evidencePanels.current.delete(message.event_id)
+                    }}
+                  >
                     <summary className="cursor-pointer">
                       本轮资料（{message.payload.available.length}）
                     </summary>
@@ -194,6 +248,11 @@ export function ChatPanel({
                       {message.payload.available.map((item) => (
                         <Button
                           key={item.id}
+                          ref={(node) => {
+                            const key = JSON.stringify([message.event_id, item.id])
+                            if (node) evidenceCards.current.set(key, node)
+                            else evidenceCards.current.delete(key)
+                          }}
                           variant="outline"
                           size="sm"
                           className="h-auto whitespace-normal text-left text-[10px]"

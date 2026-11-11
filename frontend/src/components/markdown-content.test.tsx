@@ -1,10 +1,31 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { MarkdownContent, JsonContent } from './markdown-content'
 
 afterEach(cleanup)
+it('resolves known IDs and numeric citations without changing code, links or unknown references', async () => {
+  const user = userEvent.setup()
+  const select = vi.fn()
+  const { container } = render(
+    <MarkdownContent
+      text={
+        '**[doc_a]** [2] [1] [missing] `[doc_a]` [[doc_a]](https://example.com)\n\n```text\n[2]\n```'
+      }
+      citationIds={['doc_a', 'doc_b', '1']}
+      onCitationClick={select}
+    />,
+  )
+  await user.click(screen.getByRole('button', { name: '查看引用 doc_a' }))
+  await user.click(screen.getByRole('button', { name: '查看引用 doc_b' }))
+  await user.click(screen.getByRole('button', { name: '查看引用 1' }))
+  expect(select.mock.calls).toEqual([['doc_a'], ['doc_b'], ['1']])
+  expect(container.querySelectorAll('[data-slot="badge"]')).toHaveLength(3)
+  expect(container.textContent).toContain('[missing]')
+  expect(container.querySelector('a')?.textContent).toBe('[doc_a]')
+  expect(container.querySelector('pre')?.textContent).toBe('[2]\n')
+})
 it('updates an unfinished JSON fence in place and renders the completed Markdown', () => {
   const { container, rerender } = render(
     <MarkdownContent text={'## 结果\n\n```json\n{"ok":'} streaming />,

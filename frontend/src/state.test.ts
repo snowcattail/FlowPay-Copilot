@@ -313,3 +313,65 @@ describe('text streamed before each tool call', () => {
     expect(liveSegments(rejected)).toEqual({ steps: ['我先查一下支付记录'], current: '' })
   })
 })
+
+describe('batched streaming projections', () => {
+  const initial = () => [event(1, 'run.started'), event(2, 'model.request')]
+  it('appends a frame once, shares unaffected projections and preserves old snapshots', () => {
+    const before = initial()
+    const messages = chatMessages(before)
+    const tools = liveTools(before)
+    const segments = liveSegments(before)
+    const batch = [
+      event(3, 'model.delta', { content: '你' }),
+      event(4, 'model.chunk', { data: 'wire' }),
+      event(5, 'model.delta', { content: '好' }),
+    ]
+    const after = mergeEvents(before, batch)
+    expect(liveText(after)).toBe('你好')
+    expect(after).toEqual([...before, ...batch])
+    expect(chatMessages(after)).toBe(messages)
+    expect(liveTools(after)).toBe(tools)
+    expect(liveSegments(before)).toBe(segments)
+    expect(liveText(before)).toBe('')
+    expect(before).toHaveLength(2)
+    expect(mergeEvents(after, [])).toBe(after)
+    expect(liveText(mergeEvents(after, [event(6, 'model.delta', { content: '！' })]))).toBe(
+      '你好！',
+    )
+  })
+  it('rebuilds on replay, replacement or out-of-order input without double counting', () => {
+    const delta = event(4, 'model.delta', { content: 'B' })
+    const first = mergeEvents(initial(), [delta])
+    expect(liveText(first)).toBe('B')
+    const reordered = mergeEvents(first, [delta, event(3, 'model.delta', { content: 'A' })])
+    expect(liveText(reordered)).toBe('AB')
+    const replaced = mergeEvents(reordered, [event(4, 'model.delta', { content: 'C' })])
+    expect(liveText(replaced)).toBe('AC')
+    expect(liveText(reordered)).toBe('AB')
+  })
+  it('matches full replay across control boundaries and late earlier-call deltas', () => {
+    const sequence = [
+      ...initial(),
+      event(3, 'model.delta', { content: '先查' }),
+      event(4, 'model.request', { output: 'internal' }, 'internal'),
+      event(5, 'model.delta', { content: '隐藏' }, 'internal'),
+      event(6, 'model.request', {}, 'final'),
+      event(7, 'model.delta', { content: '迟到' }),
+      event(8, 'model.delta', { content: '回答' }, 'final'),
+      event(9, 'answer.rejected', {}, 'final'),
+      event(10, 'model.delta', { content: '隐藏' }, 'final'),
+      event(11, 'message.assistant', { content: '结论' }),
+      event(12, 'run.finished', { status: 'completed' }),
+      event(13, 'model.delta', { content: '隐藏' }, 'final'),
+    ]
+    let incremental: TraceEvent[] = []
+    for (const next of sequence) {
+      incremental = mergeEvents(incremental, [next])
+      const replay = [...incremental]
+      expect(liveSegments(incremental)).toEqual(liveSegments(replay))
+      expect(chatMessages(incremental)).toEqual(chatMessages(replay))
+      expect(liveTools(incremental)).toEqual(liveTools(replay))
+      expect(statusOf(incremental)).toBe(statusOf(replay))
+    }
+  })
+})
