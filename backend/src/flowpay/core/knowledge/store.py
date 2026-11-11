@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import PurePosixPath
 
@@ -26,6 +27,36 @@ from .contracts import (
     PassageSource,
     PendingChunk,
 )
+
+RRF_K = 60
+VECTOR_WEIGHT = 1.0
+KEYWORD_WEIGHT = 1.25
+
+
+def reciprocal_rank_fusion(
+    vector: list[Passage], keyword: list[Passage], limit: int
+) -> list[Passage]:
+    """按片段身份融合两路名次，关键词略高权重；同分沿用首次召回顺序。"""
+    scores: dict[str, float] = {}
+    passages: dict[str, Passage] = {}
+    order: dict[str, int] = {}
+    for hits, weight in ((vector, VECTOR_WEIGHT), (keyword, KEYWORD_WEIGHT)):
+        for rank, passage in enumerate(hits, 1):
+            passages.setdefault(passage.id, passage)
+            order.setdefault(passage.id, len(order))
+            scores[passage.id] = scores.get(passage.id, 0.0) + weight / (RRF_K + rank)
+    return [
+        passages[key]
+        for key in sorted(scores, key=lambda key: (-scores[key], order[key]))[:limit]
+    ]
+
+
+def exact_terms(text: str) -> list[str]:
+    """提取字段名和业务编号；短普通词交给全文检索，避免模糊匹配噪声。"""
+    return list(dict.fromkeys(
+        term for term in re.findall(r"[A-Za-z][A-Za-z0-9_-]*", text)
+        if len(term) >= 3 and ("_" in term or "-" in term or any(c.isdigit() for c in term))
+    ))[:16]
 
 
 class PostgresVectorStore:
@@ -265,8 +296,9 @@ class PostgresVectorStore:
         query: EmbeddedBatch,
         limit: int = 5,
         filters: JsonObject | None = None,
+        text: str = "",
     ) -> list[Passage]:
-        """在指定就绪集合内返回带来源信息的相似分块。
+        """在指定就绪集合内融合向量与关键词召回，返回带来源的分块。
 
         query 必须只有一个向量且模型身份与集合一致；filters 对文档 metadata 做包含匹配。
         score 为 1 减余弦距离，表示相似度而非答案置信度；同分按文档与块号稳定排序。
@@ -283,7 +315,8 @@ class PostgresVectorStore:
             if not same_vector_space(collection["build_config"]["embedding"], query.spec):
                 raise ValueError("Query embedding configuration differs from collection")
             validate_vector(query.vectors[0], collection["dimensions"])
-            rows = db.execute(
+            candidate_limit = min(max(limit * 5, 30), 500)
+            vector = db.execute(
                 """
                 WITH candidates AS MATERIALIZED (
                   SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,c.embedding,
@@ -295,9 +328,43 @@ class PostgresVectorStore:
                        source_sha256,metadata,1-(embedding <=> %s::vector) AS score
                 FROM candidates ORDER BY score DESC,doc_id,chunk_no LIMIT %s
                 """,
-                (collection_id, Jsonb(filters or {}), json.dumps(query.vectors[0]), limit),
+                (
+                    collection_id, Jsonb(filters or {}),
+                    json.dumps(query.vectors[0]), candidate_limit,
+                ),
             ).fetchall()
-            return [_passage(row) for row in rows]
+            if not text.strip():
+                return [_passage(row) for row in vector[:limit]]
+            # simple 配置保留 API 标识符；ILIKE 补足连字符错误码和订单号的精确命中。
+            patterns = [
+                "%" + term.replace("\\", "\\\\").replace("%", "\\%")
+                .replace("_", "\\_") + "%"
+                for term in exact_terms(text)
+            ]
+            keyword = db.execute(
+                """
+                SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,d.title,
+                       d.source_path,d.source_sha256,d.metadata,
+                       1-(c.embedding <=> %s::vector) AS score
+                FROM chunks c JOIN documents d USING(collection_id,doc_id)
+                WHERE c.collection_id=%s AND d.metadata @> %s::jsonb
+                  AND (to_tsvector('simple', c.content) @@ websearch_to_tsquery('simple', %s)
+                    OR (cardinality(%s::text[]) > 0 AND c.content ILIKE ANY(%s::text[])))
+                ORDER BY (SELECT count(*) FROM unnest(%s::text[]) AS terms(pattern)
+                          WHERE c.content ILIKE terms.pattern) DESC,
+                         ts_rank_cd(to_tsvector('simple', c.content),
+                                    websearch_to_tsquery('simple', %s)) DESC,
+                         c.doc_id,c.chunk_no
+                LIMIT %s
+                """,
+                (
+                    json.dumps(query.vectors[0]), collection_id, Jsonb(filters or {}),
+                    text, patterns, patterns, patterns, text, candidate_limit,
+                ),
+            ).fetchall()
+            return reciprocal_rank_fusion(
+                [_passage(row) for row in vector], [_passage(row) for row in keyword], limit
+            )
 
     # 整篇读回只按文档编号排序，不重新计算相似度：这是"读完这一篇"，不是检索。
     def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:

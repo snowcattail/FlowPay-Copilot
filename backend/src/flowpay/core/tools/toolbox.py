@@ -37,7 +37,11 @@ class Toolbox:
         return [tool.definition() for tool in self.tools.values()]
 
     async def run(
-        self, tool_call: ChatCompletionMessageFunctionToolCall, *, parent_call_id: str
+        self,
+        tool_call: ChatCompletionMessageFunctionToolCall,
+        *,
+        parent_call_id: str,
+        started: bool = False,
     ) -> JsonObject:
         """执行 SDK 返回的一次 function 调用，返回工具结果。
 
@@ -50,6 +54,18 @@ class Toolbox:
             tool_call.function.arguments,
             call_id=tool_call.id,
             parent_call_id=parent_call_id,
+            started=started,
+        )
+
+    async def start(
+        self, tool_call: ChatCompletionMessageFunctionToolCall, *, parent_call_id: str
+    ) -> None:
+        """按模型给出的顺序记录开始事件，随后可以并行执行。"""
+        await self.tracer.emit(
+            "tool.started",
+            {"name": tool_call.function.name, "arguments": tool_call.function.arguments},
+            tool_call.id,
+            parent_call_id,
         )
 
     # 先记录工具名和参数；执行失败也保留关联事件，便于定位模型与工具的关系。
@@ -59,12 +75,14 @@ class Toolbox:
         arguments: JsonObject | str,
         call_id: str,
         parent_call_id: str | None = None,
+        started: bool = False,
     ) -> JsonObject:
         """按名称执行工具；参数解码与结构校验都在记录之后进行。"""
         start = perf_counter()
-        await self.tracer.emit(
-            "tool.started", {"name": name, "arguments": arguments}, call_id, parent_call_id
-        )
+        if not started:
+            await self.tracer.emit(
+                "tool.started", {"name": name, "arguments": arguments}, call_id, parent_call_id
+            )
         try:
             result = await self._dispatch(name, arguments)
             await self.tracer.emit(

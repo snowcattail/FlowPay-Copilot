@@ -1,5 +1,6 @@
 """s3 多源调查：文档之外还有业务记录，用前一步查到的 ID 决定下一步查什么。"""
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -123,7 +124,7 @@ class S3Workflow:
         self.prepare_query: Callable[[str], str] = prepare_query
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
-        """手写 Agent Loop：一次回复里的多个动作按顺序执行，依赖关系由模型自己安排。"""
+        """手写 Agent Loop：同一回复的独立动作并行，跨回复依赖由模型安排。"""
         agent = AgentTurn.start(
             turn, runtime, SYSTEM, self.model, Budget(self.max_model_calls, self.max_tool_calls)
         )
@@ -196,8 +197,15 @@ class S3Workflow:
                 if await agent.disputed(reply):
                     continue
                 return agent.accept(reply, actions=actions)
-            for action in reply.actions:
-                agent.observe(await agent.perform(action))
+            await agent.start_actions(reply.actions)
+            outcomes = await asyncio.gather(
+                *(agent.perform(action, started=True) for action in reply.actions),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                agent.observe(outcome)
         raise ModelOutputError("s3 在模型调用预算内未生成有效回答")
 
     @staticmethod

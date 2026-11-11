@@ -142,8 +142,9 @@ class VectorStore(Protocol):
         query: EmbeddedBatch,
         limit: int = 5,
         filters: JsonObject | None = None,
+        text: str = "",
     ) -> list[Passage]:
-        """在指定集合内用查询向量排序并过滤元数据，返回最多 limit 条带来源的候选。"""
+        """在指定集合内融合向量和原文关键词召回，返回最多 limit 条候选。"""
         ...
 
     def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:

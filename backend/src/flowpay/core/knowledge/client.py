@@ -91,7 +91,7 @@ class KnowledgeClient:
             # 这里不会自动改写问题或拼接业务提示，那些策略由 workflows 决定。
             batch = await self.embeddings.embed([text])
             result = await asyncio.to_thread(
-                self.store.search, collection_id, batch, limit, filters
+                self.store.search, collection_id, batch, limit, filters, text
             )
             # 事件载荷保留完整溯源；只有交给模型的那一份会被投影成四个字段。
             await self.tracer.emit(
