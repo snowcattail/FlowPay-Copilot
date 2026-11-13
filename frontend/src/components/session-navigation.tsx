@@ -101,7 +101,7 @@ export function SessionNavigation({
         </span>
         <div>
           <span className="text-lg font-semibold tracking-tight">
-            FlowPay <span className="font-normal text-muted-foreground">Lab</span>
+            FlowPay <span className="font-normal text-muted-foreground">Copilot</span>
           </span>
           <p className="mt-0.5 text-[10px] tracking-[0.12em] text-muted-foreground">
             技术支持 · 调查工作台
