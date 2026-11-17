@@ -12,13 +12,15 @@
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License"></a>
   </p>
   <p>面向支付与技术支持场景的 <strong>Agentic RAG 全栈诊断工作台</strong>。</p>
-  <p>致力于将分散的技术文档、核心交易表与 Webhook 投递日志转化为可检索、可追溯、可恢复的结构化排障能力。</p>
+  <p>React + TypeScript 前端将持久化事件投影为对话、证据与运行轨迹；后端通过自研分阶段 Agent Loop 编排模型、文档检索和受控业务查询。</p>
   <p>
     <a href="https://star-history.dera.page/#snowcattail/FlowPay-Copilot&amp;Date"><img src="https://star-history.dera.page/svg?repos=snowcattail/FlowPay-Copilot&amp;type=Date" alt="Star History Chart"></a>
   </p>
 </div>
 
 ## 项目预览
+
+项目使用独立分发的仿真支付业务数据与评测包，不连接真实支付生产环境。以下截图展示本地仿真环境中的工作台交互效果。
 
 **三栏响应式排障工作台**
 
@@ -32,53 +34,45 @@
 
 ![运行轨迹与事件检查](docs/images/run-trace-inspector.png)
 
-工程师进入工作台后，可创建排障会话并输入线上支付异常的账户、环境或报错信息；既可手动选择诊断策略，也可启用自动路由，由系统将支付异常导向交互式深度诊断。工作台会流式呈现结构化结论、行内证据角标、工具调用树与耗时统计，并支持基于同一会话继续追问。更正账户或环境时，旧条件下的业务编号会失效并触发重查；运行中断后可从持久化检查点继续调查。
+工程师进入工作台后，可创建仿真排障会话并输入账户、环境或报错信息；既可手动选择诊断策略，也可启用自动路由。React 工作台将事件流投影为对话和运行轨迹，呈现结构化结论、行内证据角标、工具调用树与耗时信息，并支持基于同一会话继续追问。更正账户或环境时，旧条件下的业务编号会失效并触发重查；运行中断后可从持久化状态继续调查。
 
 ## 核心功能
 
-线上支付技术支持天然面临**多数据源割裂、排障链路长、高频流式状态复杂、大模型幻觉敏感**的挑战。FlowPay Copilot 围绕以下四层工程能力构建：
+支付技术支持场景面临**多数据源割裂、排障链路长、高频流式状态复杂、大模型幻觉敏感**的挑战。FlowPay Copilot 围绕以下四层工程能力构建：
 
 ### ⚡ 事件驱动的流式工作台与状态投影
 
-> 将底层离散的持久化事件流解耦映射为聊天与轨迹双视图，高频流式输出不卡顿、长会话不掉帧。
+> React 三栏响应式工作台将同一份持久化事件投影为聊天与运行轨迹双视图，支持从结论追溯到调用与证据。
 
-- **纯函数投影** — 将持久化事件归约为消息、证据、运行状态与用量，并按调用关系还原轨迹树，仅更新受影响的运行；`liveSegments` 按 `call_id` 分隔单次运行中的多步模型输出，隔离工具调用前的过渡文本、被守卫拦截的争议草稿与最终提交的正式回答，避免中间态污染聊天正文。
-- **流式增量归约** — `requestAnimationFrame` 与 32ms 窗口微批合并高频正文事件，连续游标走追加路径，配合 `useDeferredValue` 延后 Markdown 解析，消除长会话 $O(N^2)$ 重算。
-- **引用证据联动** — 已知文档与数字引用转为可交互角标，点击即可展开、定位并高亮对应证据卡片，未知引用保留原文。
+- **纯函数事件投影** — `state.ts` 将事件归约为消息、证据、运行状态与用量；`liveSegments` 按 `call_id` 分隔多步模型输出，隔离工具调用前的过渡文本、被守卫拦截的草稿与正式回答。`trace.ts` 按调用关系还原轨迹树，`trace-index.ts` 在追加事件时只重算受影响的运行。
+- **流式订阅与渲染** — 前端先读取历史事件，再以最大 `seq` 订阅 SSE；重放事件按 `seq` 去重。高频正文优先通过 `requestAnimationFrame` 合批，32ms 定时器在 rAF 暂停时提交缓冲；连续事件走追加路径，并通过 useDeferredValue 延后高频流式下的 Markdown 语法树重解析，避免长回复输出阻塞用户滚动与输入交互。
+- **引用证据联动** — `react-markdown` 将已知文档与数字引用转为可交互角标，点击即可展开、定位并高亮对应证据卡片，未知引用保留原文。
 
 ### 🛡️ 端到端高可靠通信与竞态治理
 
 > 把耗时的多步 Agent 调查从请求主链路中剥离，提交即返回，弱网断线可续传、并发切页不串台。
 
-- **异步受理** — 消息与继续请求立即返回 `202 Accepted`，后台调查将事件按会话内单调递增的 `seq` 事务化写入 SQLite WAL。
-- **游标续传** — 先取历史快照，再以最大 `seq` 建立 SSE 订阅；断线重连补齐已落盘事件，客户端按游标去重。
+- **异步受理** — 消息与继续请求返回 `202 Accepted`，后台调查将事件按会话内单调递增的 `seq` 事务化写入 SQLite WAL。
+- **游标续传** — API 根据 `after` 与自动重连时的 `Last-Event-ID` 读取已提交事件并补齐缺口，客户端按 `seq` 去重。
 - **竞态隔离** — 重复点击由同步忙碌标记拦截，重试复用 `request_id`，刷新版本与订阅生命周期共同防止旧响应串入新页面。
 - **取消恢复** — 取消时等待后台任务写入终态；重启后标记未完结运行，失败、取消或中断的调查可从保存状态继续。
 
 ### 🔁 受控的多步 Agent 排障状态机
 
-> 每条排障结论都必须绑定可在日志与数据库中核验的真实单号证据，拒绝模型自由发挥与捏造。
+> 自研分阶段 Agent Loop 通过工具证据、业务编号校验和执行预算约束仿真排障过程。
 
-- **多档策略编排** — 从快速文档问答逐步扩展到多步文档调查、支付与 Webhook 联合取证及交互式跨轮诊断；无依赖工具并发执行。
+- **多档策略编排** — `s1` 快速文档问答、`s2` 多步文档调查、`s3` 支付与 Webhook 联合取证、`s4` 交互式跨轮诊断。`s2`–`s4` 在各自 workflow 中手写 Agent Loop；模型通过 Tool Calling 提议调用，工具参数经 JSON Schema 校验，同一批无依赖工具用 `asyncio.gather` 并发执行。
 - **跨轮条件与显式追问** — 会话保存账户、环境与业务编号；更正范围时移除旧编号并重查。关键条件缺失时，`ask_user` 结构化声明缺项，完整回填当批工具结果后以 `waiting_user` 保存检查点并挂起；用户补充后恢复上下文、合并 `Case` 条件继续调查。
 - **业务编号校验** — 回答中的记录编号与用户输入及工具结果交叉比对，发现争议编号时记录事件并在预算内触发改写。
-- **预算收敛与查询去重** — 规范化查询键拦截相同参数的重复工具调用；单轮最多 10 次模型调用、8 次工具调用，额度临近上限时卸载工具集，引导模型依据已有证据收敛作答。接近 Token 上限时折叠旧工具观察，保留编号与摘要及完整工具调用配对。
-
-```text
-[Run #run_01J9 | Seq #142 -> #148 | Mode: Interactive Diagnosis]
-Case      account=acct_prod_8821  env=production  payment_id=pay_99201 (Verified)
-Tools     [Parallel] query_payments (18ms) + list_delivery_attempts (24ms)
-Evidence  doc:webhook-retry#c03 [1] | payment:pay_99201 [2] | attempt:att_7712 [3]
-Guard     Disputed ID Check: PASSED (0 hallucinated IDs, token budget: 1,840 / 4,096)
-```
+- **预算收敛与查询去重** — 规范化查询键拦截相同参数的重复工具调用；`s2` 每轮最多 5 次模型调用、3 次工具调用，`s3`、`s4` 每轮最多 10 次模型调用、8 次工具调用。上下文 Token 数使用估算值；接近预算上限时折叠旧工具观察，并保留工具调用与结果配对。
 
 ### 🔍 混合检索管道与安全数据沙箱
 
-> 兼顾自然语言语义与错误码精确匹配，并在数据库底层构筑只读护栏，保障生产级数据查询安全。
+> 兼顾自然语言语义与错误码精确匹配，并对仿真业务快照实施受控只读查询。
 
-- **融合排序** — pgvector 语义召回与 `tsvector` 词项检索分别排序，再经 RRF 合并，兼顾自然问法、API 字段与错误码。
+- **融合排序** — Ollama Embedding 为查询生成向量；PostgreSQL 中的 pgvector 语义召回与 `tsvector` 全文检索分别排序，再经 RRF 合并，兼顾自然问法、API 字段与错误码。
 - **版本与向量空间一致性** — 导入时核对 SHA-256 清单，检索前验证 Embedding 模型身份、维度与请求参数；运行前核对知识库与业务快照版本，底层数据版本变更时要求新建会话，避免历史证据与新数据混用。
-- **只读查询护栏** — 底层覆盖 **100 篇技术文档（712 个知识切片）、17 张核心业务关系表与 4 类 JSONL 运行日志（数万行级）**；业务工具仅接收结构化范围与过滤条件，读取端以表列白名单、参数绑定、SQLite Authorizer、时限和行数上限约束取证。
+- **数据规模与只读护栏** — 独立数据集包含 **100 篇技术文档（本地索引 809 条知识切片）、17 张业务与仿真支撑表及 4 类 JSONL 运行日志**（`api_requests.jsonl`、`usage_buckets.jsonl`、`webhook_delivery_attempts.jsonl`、`service_incidents.jsonl`）。业务工具仅接收结构化范围与过滤条件，读取端以表列白名单、参数绑定、SQLite Authorizer、查询超时和行数上限约束取证。
 
 ## 系统流程
 
@@ -105,7 +99,8 @@ sequenceDiagram
     end
     Web->>API: GET /sessions/{id}/events
     API->>Log: 读取历史事件
-    Log-->>Web: 事件快照与最大 seq
+    Log-->>API: 返回已提交事件快照
+    API-->>Web: 返回历史事件与最大 seq
     Web->>API: GET /stream?after=seq (重连带 Last-Event-ID)
     API->>Log: 按 seq 读取已提交事件
     API-->>Web: SSE 历史缺口与实时增量
@@ -114,7 +109,7 @@ sequenceDiagram
         par RRF 混合检索
             Agent->>Data: pgvector + tsvector 检索并执行 RRF
             Data-->>Agent: 返回文档证据
-        and asyncio.gather 并发调用多源业务工具
+        and asyncio.gather 并发调用同批无依赖业务工具
             Agent->>Data: 并发查询支付与 Webhook 记录
             Data-->>Agent: 返回只读业务证据
         end
@@ -130,15 +125,16 @@ sequenceDiagram
 
 ## 技术栈
 
-| 分层 | 技术 | 仓库中的用途 |
+| 层次 | 技术 | 仓库中的用途 |
 | --- | --- | --- |
-| 前端交互层 | React 19、TypeScript 5.9、Vite 7、Tailwind CSS 4、Radix UI、`react-markdown` | 三栏工作台、事件投影、组件与 Markdown 证据引用；Vite 提供开发服务与构建。 |
-| 服务端与通信 | Python 3.12+（`<3.14`）、FastAPI、Pydantic 2、Uvicorn、SSE | 会话 API、结构化请求校验、异步运行受理与游标事件订阅。 |
-| Agent 与检索 | OpenAI 兼容聊天接口、Ollama Embedding、PostgreSQL 17 + pgvector、`tsvector` | 手写阶段 Agent Loop、Token 预算、文档向量与全文混合检索。 |
-| 存储与安全沙箱 | SQLite WAL、SQLAlchemy 2、Alembic、psycopg 3、SQLite Authorizer | 本地事件日志、知识库迁移与连接、业务快照只读查询。 |
-| 工程质量与门禁 | Vitest、Pytest、Ruff、Basedpyright、Prettier、TypeScript 编译器 | 前后端测试、Python 规范及类型检查、前端格式和构建检查。 |
+| Web 前端 | React 19、TypeScript 5.9、Vite 7、Tailwind CSS 4、Radix UI、`react-markdown` | 响应式诊断工作台；事件投影、聊天与运行轨迹双视图、Markdown 引用及证据交互。 |
+| API 与实时通信 | Python 3.12–3.13、FastAPI、Pydantic 2、Uvicorn、SSE | 会话和运行 API、请求校验、异步受理、历史事件读取与游标续传。 |
+| Agent 编排 | OpenAI 兼容聊天接口、自研分阶段 Agent Loop、Tool Calling | `s1`–`s4` 诊断策略、工具参数校验、调用预算、跨轮追问、并发工具和业务编号校验。 |
+| 检索与知识库 | Ollama Embedding、PostgreSQL 17、pgvector、`tsvector`、RRF | 文档向量召回、全文召回及融合排序。 |
+| 状态存储与数据安全 | SQLite WAL、SQLAlchemy 2、Alembic、psycopg 3、SQLite Authorizer | 会话事件持久化、知识库迁移与连接、仿真业务快照的受控只读查询。 |
+| 部署与工程质量 | Docker Compose、Vitest、Pytest、Ruff、Basedpyright、Prettier、TypeScript 编译器 | 本地服务编排、前后端测试、格式检查、类型检查与构建检查。 |
 
-**架构选型说明** — 双存储解耦：PostgreSQL 承担多维向量与全文混合检索，SQLite WAL 专职高频只追加的会话事件溯源日志，使运行状态与评测环境按目录轻量隔离。聊天模型通过 OpenAI 兼容协议解耦，切换 DeepSeek、OpenAI 或本地兼容模型无需改代码。
+**架构选型说明** — PostgreSQL 承担知识库向量与全文混合检索；SQLite WAL 保存只追加的会话事件溯源日志；独立数据集中的业务 SQLite 快照供受控只读查询。聊天模型通过 OpenAI 兼容接口接入 DeepSeek、OpenAI 或本地兼容服务；Ollama 为知识检索生成 Embedding，二者职责分离。
 
 ## 本地运行
 
@@ -182,7 +178,7 @@ make up                 # 可用 STAGE=s3 make up 切换诊断模式
 # 或直接运行：python3 scripts/start.py
 ```
 
-`make up` 依次启动 PostgreSQL、执行 Alembic 迁移与角色授权、从数据集 dump 恢复知识集合、启动 Ollama 并核对模型 digest，最后启动后端和前端。已就绪的知识集合与模型会复用。知识集合的 100 篇文档、712 个向量由数据集恢复，提问时的查询向量仍需 Ollama 实时生成。
+`make up` 依次启动 PostgreSQL、执行 Alembic 迁移与角色授权、从数据集 dump 恢复知识集合、启动 Ollama 并核对模型 digest，最后启动后端和前端。已就绪的知识集合与模型会复用；提问时的查询向量仍需 Ollama 实时生成。
 
 宿主机调试时，可改用 `make setup SETUP_ARGS=--download-model`：它安装依赖、准备 PostgreSQL 和知识集合，并把嵌入模型安装到宿主机 Ollama。单独启动数据库可运行 `make db-up`，对已有数据库补迁移可运行 `make db-setup`。
 
@@ -209,7 +205,7 @@ npm --prefix frontend run test               # Vitest
 
 `make quality` 调用 `scripts/check_quality.py`，默认不运行独立数据库验收；`--database` 才执行 `scripts/verify_database.py`。未配置数据集时，相关测试会跳过，此时不能视作完整数据集验收。另可用 `make smoke` 对运行中的后端验证 HTTP/SSE 回放、取消与继续。
 
-仓库内置 `benchmark` 评测套件，可用独立数据包中 **300 道带标准答案与黄金证据编号的排障题**，按结论准确性与核心证据命中率对不同诊断策略做自动化回归评测。
+仓库内置 `benchmark` 评测套件，读取独立数据包 `benchmark/design/benchmark_blueprints.jsonl` 中 **300 道带标准答案和规划证据编号（`planned_evidence_ids`）的排障设计题**，按结论准确性与核心证据命中率对不同诊断策略做自动化回归评测。数据包另有 `benchmark/resolved/resolved_blueprints.jsonl`，其中的 `resolved_evidence_ids` 是已解析的证据编号，不与设计题的规划编号混用。
 
 ### 常见问题
 
@@ -227,8 +223,26 @@ npm --prefix frontend run test               # Vitest
 
 ```text
 .
-├── frontend/                    # React 工作台：组件、事件投影、订阅 Hooks 与 Vitest
+├── frontend/                    # 工作台与前端测试
 │   └── src/
+│       ├── App.tsx             # 响应式布局与聊天/轨迹视图
+│       ├── components/
+│       │   ├── chat-panel.tsx  # 对话、流式内容与证据卡片
+│       │   ├── markdown-content.tsx # Markdown、引用角标与代码展示
+│       │   ├── run-trace.tsx   # 运行轨迹检查器
+│       │   ├── trace-message.tsx # 模型消息与工具上下文
+│       │   ├── event-dialog.tsx # 原始事件详情
+│       │   ├── session-navigation.tsx # 会话导航
+│       │   └── ui/             # 基础交互组件
+│       ├── hooks/
+│       │   ├── use-session-events.ts # 历史事件与 SSE 订阅
+│       │   ├── use-run-actions.ts # 提交、继续、取消与请求幂等
+│       │   ├── use-session-catalog.ts # 会话列表与选择
+│       │   └── use-trace.ts    # 轨迹视图投影
+│       ├── state.ts            # 事件归约与聊天状态投影
+│       ├── trace.ts            # 调用关系与轨迹树投影
+│       ├── trace-index.ts      # 按运行增量更新轨迹
+│       └── lib/session-api.ts  # 会话 HTTP API
 ├── backend/
 │   ├── src/flowpay/
 │   │   ├── workflows/           # 多档诊断策略编排与受控 Agent Loop
